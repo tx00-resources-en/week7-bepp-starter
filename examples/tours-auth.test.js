@@ -21,6 +21,12 @@ const tours = [
   },
 ];
 
+// Helper: read all tours straight from the DB
+const toursInDb = async () => {
+  const allTours = await Tour.find({});
+  return allTours.map((t) => t.toJSON());
+};
+
 let token = null;
 
 // Create a user and get a token before all tests
@@ -38,87 +44,160 @@ beforeAll(async () => {
   token = result.body.token;
 });
 
-describe("Protected Tour Routes", () => {
+describe("Tour Routes", () => {
+  // Seed tours via the API (so user_id is set by the controller)
   beforeEach(async () => {
     await Tour.deleteMany({});
-    await Promise.all([
-      api.post("/api/tours").set("Authorization", "Bearer " + token).send(tours[0]),
-      api.post("/api/tours").set("Authorization", "Bearer " + token).send(tours[1]),
-    ]);
+    await Promise.all(
+      tours.map((tour) =>
+        api
+          .post("/api/tours")
+          .set("Authorization", "Bearer " + token)
+          .send(tour)
+      )
+    );
   });
 
-  // ---------------- GET ----------------
-  it("should return all tours as JSON when GET /api/tours is called", async () => {
-    const response = await api
-      .get("/api/tours")
-      .set("Authorization", "Bearer " + token)
-      .expect(200)
-      .expect("Content-Type", /application\/json/);
+  // ────────────────── GET /api/tours (protected) ──────────────────
+  describe("GET /api/tours", () => {
+    describe("when the user is authenticated", () => {
+      it("should return all tours as JSON with status 200", async () => {
+        const response = await api
+          .get("/api/tours")
+          .set("Authorization", "Bearer " + token)
+          .expect(200)
+          .expect("Content-Type", /application\/json/);
 
-    expect(response.body).toHaveLength(tours.length);
+        expect(response.body).toHaveLength(tours.length);
+      });
+    });
+
+    describe("when the user is not authenticated", () => {
+      it("should return 401 if no token is provided", async () => {
+        await api.get("/api/tours").expect(401);
+      });
+    });
   });
 
-  it("should return 401 if no token is provided", async () => {
-    await api.get("/api/tours").expect(401);
+  // ────────────────── GET /api/tours/:id (protected) ──────────────────
+  describe("GET /api/tours/:id", () => {
+    it("should return one tour by ID", async () => {
+      const tour = await Tour.findOne();
+      const response = await api
+        .get(`/api/tours/${tour._id}`)
+        .set("Authorization", "Bearer " + token)
+        .expect(200)
+        .expect("Content-Type", /application\/json/);
+
+      expect(response.body.name).toBe(tour.name);
+    });
+
+    it("should return 404 for a non-existing tour ID", async () => {
+      const nonExistentId = new mongoose.Types.ObjectId();
+      await api
+        .get(`/api/tours/${nonExistentId}`)
+        .set("Authorization", "Bearer " + token)
+        .expect(404);
+    });
   });
 
-  // ---------------- POST ----------------
-  it("should create one tour when POST /api/tours is called", async () => {
-    const newTour = {
-      name: "Paris in 3 Days Tour",
-      info: "Experience the beauty of Paris in just 3 days.",
-      image: "https://www.course-api.com/images/tours/tour-3.jpeg",
-      price: 1500,
-    };
-    const response = await api
-      .post("/api/tours")
-      .set("Authorization", "Bearer " + token)
-      .send(newTour)
-      .expect(201);
+  // ────────────────── POST /api/tours (protected) ──────────────────
+  describe("POST /api/tours", () => {
+    describe("when the user is authenticated", () => {
+      it("should create a new tour with status 201", async () => {
+        const newTour = {
+          name: "Paris in 3 Days Tour",
+          info: "Experience the beauty of Paris in just 3 days.",
+          image: "https://www.course-api.com/images/tours/tour-3.jpeg",
+          price: 1500,
+        };
 
-    expect(response.body.name).toBe(newTour.name);
+        const response = await api
+          .post("/api/tours")
+          .set("Authorization", "Bearer " + token)
+          .send(newTour)
+          .expect(201);
+
+        expect(response.body.name).toBe(newTour.name);
+
+        const toursAtEnd = await toursInDb();
+        expect(toursAtEnd).toHaveLength(tours.length + 1);
+      });
+    });
+
+    describe("when the user is not authenticated", () => {
+      it("should return 401 if no token is provided", async () => {
+        const newTour = {
+          name: "Ghost Tour",
+          info: "This should not be created.",
+          image: "https://www.course-api.com/images/tours/ghost.jpeg",
+          price: 999,
+        };
+
+        await api.post("/api/tours").send(newTour).expect(401);
+
+        const toursAtEnd = await toursInDb();
+        expect(toursAtEnd).toHaveLength(tours.length);
+      });
+    });
   });
 
-  // ---------------- GET by ID ----------------
-  it("should return one tour by ID", async () => {
-    const tour = await Tour.findOne();
-    const response = await api
-      .get(`/api/tours/${tour._id}`)
-      .set("Authorization", "Bearer " + token)
-      .expect(200)
-      .expect("Content-Type", /application\/json/);
+  // ────────────────── PUT /api/tours/:id (protected) ──────────────────
+  describe("PUT /api/tours/:id", () => {
+    describe("when the user is authenticated", () => {
+      it("should update the tour and return the updated document", async () => {
+        const tour = await Tour.findOne();
+        const updates = { info: "Updated tour information.", price: 2000 };
 
-    expect(response.body.name).toBe(tour.name);
+        const response = await api
+          .put(`/api/tours/${tour._id}`)
+          .set("Authorization", "Bearer " + token)
+          .send(updates)
+          .expect(200)
+          .expect("Content-Type", /application\/json/);
+
+        expect(response.body.info).toBe(updates.info);
+
+        const updatedTour = await Tour.findById(tour._id);
+        expect(updatedTour.price).toBe(updates.price);
+      });
+    });
+
+    describe("when the user is not authenticated", () => {
+      it("should return 401 if no token is provided", async () => {
+        const tour = await Tour.findOne();
+        await api
+          .put(`/api/tours/${tour._id}`)
+          .send({ info: "Nope" })
+          .expect(401);
+      });
+    });
   });
 
-  // ---------------- PUT ----------------
-  it("should update one tour by ID", async () => {
-    const tour = await Tour.findOne();
-    const updatedTour = { info: "Updated tour information.", price: 2000 };
+  // ────────────────── DELETE /api/tours/:id (protected) ──────────────────
+  describe("DELETE /api/tours/:id", () => {
+    describe("when the user is authenticated", () => {
+      it("should delete the tour and return status 204", async () => {
+        const toursAtStart = await toursInDb();
+        const tourToDelete = toursAtStart[0];
 
-    const response = await api
-      .put(`/api/tours/${tour._id}`)
-      .set("Authorization", "Bearer " + token)
-      .send(updatedTour)
-      .expect(200)
-      .expect("Content-Type", /application\/json/);
+        await api
+          .delete(`/api/tours/${tourToDelete._id}`)
+          .set("Authorization", "Bearer " + token)
+          .expect(204);
 
-    expect(response.body.info).toBe(updatedTour.info);
+        const toursAtEnd = await toursInDb();
+        expect(toursAtEnd).toHaveLength(toursAtStart.length - 1);
+        expect(toursAtEnd.map((t) => t.name)).not.toContain(tourToDelete.name);
+      });
+    });
 
-    const updatedTourCheck = await Tour.findById(tour._id);
-    expect(updatedTourCheck.price).toBe(updatedTour.price);
-  });
-
-  // ---------------- DELETE ----------------
-  it("should delete one tour by ID", async () => {
-    const tour = await Tour.findOne();
-    await api
-      .delete(`/api/tours/${tour._id}`)
-      .set("Authorization", "Bearer " + token)
-      .expect(204);
-
-    const tourCheck = await Tour.findById(tour._id);
-    expect(tourCheck).toBeNull();
+    describe("when the user is not authenticated", () => {
+      it("should return 401 if no token is provided", async () => {
+        const tour = await Tour.findOne();
+        await api.delete(`/api/tours/${tour._id}`).expect(401);
+      });
+    });
   });
 });
 
